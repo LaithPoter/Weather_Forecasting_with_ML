@@ -135,42 +135,95 @@ These relationships are also intuitively consistent with the weather phenomenon 
 
 ---
 
-## 🤖 Model
+## 🧩 The Challenge
 
-I used a **Random Forest Classifier**.
+Two properties of this dataset shaped every modeling decision:
 
-Instead of relying on default parameters, I used `GridSearchCV` with **5-fold cross-validation**.
+- **It is small.** After dropping the few rows with missing values, there are 365 days in total. With a chronological 80/20 split, the test set holds only **73 days**.
+- **It is imbalanced.** About **68% of days are rainy** and only 32% are dry, so the *dry* days are the minority class here.
 
-The search explored parameters including:
+On data like this, **accuracy is misleading**. A model that answers "rain" every single day would already score about 66% accuracy on the test period while being useless for dry days.
 
-- `n_estimators`
-- `max_depth`
-- `min_samples_split`
-- `min_samples_leaf`
-- `max_features`
-
-The optimization target was **F1 score**.
+So instead of optimizing accuracy, I tuned the model for **F1-score**, which only rewards a model that balances precision and recall on rainy days, and I checked per-class recall for both classes.
 
 ---
 
-## 🎯 Why F1 Instead of Only Accuracy?
+## 🛠️ Design Choices
 
-The dataset is not perfectly balanced.
+### Chronological split instead of a random one
 
-More importantly, the cost of a prediction error is not necessarily symmetric.
+Weather is a time series. Each day is related to the days around it, and in real use a model is always asked about days it has not seen yet.
 
-For example, missing a rainy day may be more disruptive for:
+A random `train_test_split` would mix future days into training and test the model on days surrounded by its own training data. That leaks information and makes results look better than they would be in practice.
 
-- Outdoor events
-- Logistics
-- Agriculture
-- Travel planning
+So the data is split by time:
 
-than warning someone about rain that does not eventually occur.
+- **Train:** the first 80% of the year
+- **Test:** the last 20% (73 days the model never saw)
 
-For that reason, I was interested in the balance between **Precision and Recall**, rather than treating accuracy as the only objective.
+### `TimeSeriesSplit` for cross-validation
 
-The model therefore leaned toward catching more rainy days, accepting some additional false alarms.
+The same logic applies inside hyperparameter tuning. Normal K-Fold would still shuffle future data into training folds.
+
+`TimeSeriesSplit(n_splits=5)` creates expanding windows: each fold trains only on the past and validates on the period right after it. The model is always tuned the way it would be used: **learn from the past, predict the future.**
+
+### Pipeline + GridSearchCV
+
+- A `Pipeline` combines `SimpleImputer` and the `RandomForestClassifier`, so preprocessing is fitted only on the training folds.
+- `GridSearchCV` searched 324 combinations of `n_estimators`, `max_depth`, `min_samples_split`, `min_samples_leaf` and `max_features`, scored by **F1**.
+
+Best parameters found:
+
+```text
+n_estimators = 200
+max_depth = None
+max_features = None
+min_samples_leaf = 2
+min_samples_split = 2
+class_weight = "balanced"
+```
+
+### `class_weight="balanced"`
+
+Because dry days are the minority, an unweighted forest naturally drifts toward predicting "rain". Setting `class_weight="balanced"` makes mistakes on dry days count more during training, so the model is pushed to pay real attention to the minority class.
+
+---
+
+## 📊 Results
+
+**Cross-validation F1 (TimeSeriesSplit, training period): 0.81**
+
+**Held-out test period (last 73 days):**
+
+| Class | Precision | Recall | F1 | Days |
+|---|---|---|---|---|
+| Dry (0) | 0.64 | 0.56 | 0.60 | 25 |
+| Rain (1) | 0.78 | 0.83 | 0.81 | 48 |
+
+- **Accuracy:** 0.74
+- **Macro F1:** 0.70
+
+In plain numbers:
+
+- Out of **48 rainy days**, the model caught **40** and missed 8.
+- Out of **25 dry days**, it correctly identified **14**. The other 11 got a rain warning that turned out to be a false alarm.
+
+The test F1 for rain (0.81) is almost identical to the cross-validation F1 (0.81), which suggests the tuning did not overfit to the validation folds.
+
+---
+
+## ⚖️ The Trade-off
+
+Even with `class_weight="balanced"`, the model is clearly stronger on rainy days (recall 0.83) than on dry days (recall 0.56).
+
+That is an acceptable direction for this problem:
+
+- **Missing a rainy day** (saying "no rain" and then it rains) disrupts outdoor events, logistics, agriculture and travel.
+- **A false alarm** (saying "rain" on a dry day) mostly costs someone carrying an umbrella for nothing.
+
+So the model accepts more false alarms in exchange for rarely being caught off guard by rain.
+
+The weak spot is clear too: **dry-day recall of 0.56 is the main thing to improve**. With only 25 dry days in the test period, a few predictions change this number a lot, so more data matters more here than further tuning.
 
 ---
 
@@ -218,7 +271,7 @@ To move beyond this proof of concept, the next version would need:
 
 - Multiple years of historical data
 - Multiple geographic locations
-- Better temporal validation
+- Walk-forward validation across multiple years
 - More observations
 - External weather sources
 - Feature engineering based on time and season
@@ -233,7 +286,8 @@ That would turn this from a small ML project into a much more realistic forecast
 
 ```text
 .
-├── Rainfall_Prediction.ipynb
+├── weather forecasting project.ipynb   # preprocessing, tuning, evaluation
+├── Weather forecasting EDA.ipynb       # exploratory data analysis
 ├── Rainfall.csv
 ├── requirements.txt
 └── README.md
@@ -250,6 +304,7 @@ That would turn this from a small ML project into a much more realistic forecast
 - Seaborn
 - Random Forest
 - GridSearchCV
+- TimeSeriesSplit
 
 ---
 
